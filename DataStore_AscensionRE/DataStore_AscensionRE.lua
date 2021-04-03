@@ -287,7 +287,7 @@ local GuildCommCallbacks = {
         SaveAddonVersion(sender, version)
     end,
     [MSG_LOGIN_REPLY] = function(sender, version)
-        addon:Print("Got MSG_LOGIN_REPLY from "..sender)
+        --addon:Print("Got MSG_LOGIN_REPLY from "..sender)
         onlineCnt = onlineCnt + 1
         SaveAddonVersion(sender, version)
     end,
@@ -389,7 +389,7 @@ end
 
 local function SendOnlineInfo()
     if onlineCnt then
-        addon:Print(format("Found %u online guildies with REToolbox", onlineCnt))
+        print(format("Guild members with DataStore_AscensionRE: %u", onlineCnt))
     end
 end
 
