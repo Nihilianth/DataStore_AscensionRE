@@ -8,20 +8,28 @@ if not DataStore then return end
 
 local addonName = "DataStore_AscensionRE"
 
-_G[addonName] = LibStub("AceAddon-3.0"):NewAddon(addonName, "AceConsole-3.0", "AceEvent-3.0")
+_G[addonName] = LibStub("AceAddon-3.0"):NewAddon(addonName, "AceConsole-3.0", "AceEvent-3.0", "AceComm-3.0", "AceSerializer-3.0", "AceTimer-3.0")
 
 local addon = _G[addonName]
 
 local THIS_ACCOUNT = "Default"
-local CommPrefix = "DS_AscRE"
+local commPrefix = "DS_AscRE"
 
 local AscensionInit = false
-AscRESpellIds = {}
+local AscRESpellIds = {}
 local collectionTypeStr = {"Enchant", "Tome"}
 
+local collectionInitMsgName = "ASC_COLLECTION_INIT"
 local collectionUpdateMsgName = "ASC_COLLECTION_UPDATE"
 local collectionREUnlockedMsgName = "ASC_COLLECTION_RE_UNLOCKED"
-local collectionTomeUnlockedMsgName = "ASC_COLLECTION_TOME_UNLOCKED"
+local collectionGuildUpdateMsgName = "ASC_GUILD_COLLECTION_UPDATE"
+-- local collectionTomeUnlockedMsgName = "ASC_COLLECTION_TOME_UNLOCKED"
+
+
+local MSG_SEND_LOGIN		= 1
+local MSG_LOGIN_REPLY		= 2
+local MSG_SEND_ENCHANTS 	= 3
+
 
 local AddonDB_Defaults = {
     global = {
@@ -52,9 +60,6 @@ local AddonDB_Defaults = {
     }
 }
 
-local PublicMethods = {
-
-}
 
 -- *** Utility functions Generic ***
 
@@ -70,9 +75,22 @@ local function GetCurrentGuild()
 	end
 end
 
+local function SaveAddonVersion(sender, version)
+	local thisGuild = GetCurrentGuild()
+	if thisGuild and sender and version then
+		thisGuild.Members[sender].Version = version
+	end
+end
+
 local function GetBuildVersion()
 	local _, version = GetBuildInfo()
 	return tonumber(version)
+end
+
+local function GetAddonVersion()
+    local version = GetAddOnMetadata(addonName, "Version")
+    --addon:Print("curVersion: "..version)
+    return version
 end
 
 local function SaveVersion(sender, version)
@@ -97,6 +115,82 @@ end
 -- *** End Utility Functions Generic ***
 
 -- *** Utility Functions Ascension ***
+local function SaveEnchants(sender, alt, data)
+    local thisGuild = GetCurrentGuild()
+    if thisGuild and sender then
+        local addonVer = thisGuild.Members[sender].Version
+        local member_alt = thisGuild.Members[alt]
+        -- addon:Print("Saving enchant from "..sender)
+        member_alt.Version = addonVer
+        -- addon:Print(format("Gota data for %s: %u", alt, #data))
+        member_alt.NumKnownEnchants = #data
+        member_alt.KnownEnchants = data
+        member_alt.lastUpdate = time()
+    end
+    addon:SendMessage(collectionGuildUpdateMsgName, sender, alt, data)
+end
+
+local enchantQueue
+local enchantTimer
+
+function GetEnchantQueue()
+    return enchantQueue
+end
+
+local function SendEnchantQueue()
+    if #enchantQueue == 0 then
+        --addon:Print("Sent all queued enchants")
+        addon:CancelTimer(enchantTimer)
+        enchantTimer = nil
+        return
+    end
+    --addon:Print(format("SendEnchantQueue: %d remaining", #enchantQueue))
+
+    local queueEntry = enchantQueue[#enchantQueue]
+    local alt = queueEntry[1]
+    local recipient = queueEntry[2]
+    local knownEnchants = queueEntry[3]
+
+    if recipient then
+        --addon:Print(format("Sending %u enchants for alt %s", #knownEnchants, alt))
+        GuildWhisper(recipient, MSG_SEND_ENCHANTS, alt, knownEnchants)
+    else
+        --addon:Print(format("Broadcasting %u enchants for alt %s", #knownEnchants, alt))
+        GuildBroadcast(MSG_SEND_ENCHANTS, alt, knownEnchants)
+    end
+
+    table.remove(enchantQueue)
+end
+
+local function SendEnchantsWithAlts(alts, recipient)
+    if GetOption("BroadcastREs" == 0) then
+        return
+    end
+
+    enchantQueue = enchantQueue or {}
+
+    --addon:Print("sending alt enchants")
+    --addon:Print("Alts: " .. alts)
+
+    if AscensionInit == true then
+        local myself = DataStore:GetCharacter()
+        local _, _, nameStripped = strsplit(".", myself)
+        --addon:Print("sending own enchants: "..myself)
+        table.insert(enchantQueue, {nameStripped, recipient, addon.ThisCharacter.KnownEnchants})
+    end
+
+    if (strlen(alts) > 0) then
+        for _, name in pairs({strsplit("|",alts)}) do
+            character = DataStore:GetCharacter(name)
+            if character then
+                --addon:Print("Sending data for alt: "..character.. " "..name)
+                table.insert(enchantQueue, {name, recipient, addon.db.global.Characters[character].KnownEnchants})
+            end
+        end
+    end
+
+    enchantTimer = enchantTimer or addon:ScheduleRepeatingTimer(SendEnchantQueue, 0.5) -- Send queued enchants every 0.5 seconds
+end
 
 --[[ * True Spell IDs *
     The CollectionStore contains some variant of skill IDs
@@ -141,13 +235,18 @@ local function ParseKnownEnchantsList(message)
         end
     end
 
-    charEnchants = knownList
-    addon:SendMessage(collectionUpdatedMsgName, knownList, AscensionInit)
+    -- addon:Print("Setting known list for char "..UnitName("player").." size: "..#knownList)
+    addon.ThisCharacter.NumKnownEnchants = #knownList
+    addon.ThisCharacter.KnownEnchants = knownList
+    addon.ThisCharacter.lastUpdate = time()
+    addon.ThisCharacter.Version = GetBuildVersion()
+    addon:SendMessage(collectionUpdateMsgName, knownList, AscensionInit)
+    SendEnchantsWithAlts("") -- send own enchants
 end
 
 -- Parse server message received after unlocking a new RE
 local function ParseNewEnchant(message)
-    addon:Print("RE Toolkit: Got FillCollectionByEnchant")
+    --addon:Print("RE Toolkit: Got FillCollectionByEnchant")
     local reList = CollectionsFrame.EnchantList
 
     local recvTable = Smallfolk.loads(string.sub(message, 3))
@@ -164,24 +263,134 @@ local function ParseNewEnchant(message)
     end
 end
 
+-- verify this
+local function OnGuildAltsReceived(self, sender, alts)
+    if sender == UnitName("player") then				-- if I receive my own list of alts in the same guild, same realm, same account..
+        --addon:Print("Guild alts received from myself")
+		GuildBroadcast(MSG_SEND_LOGIN, GetBuildVersion())
+		addon:ScheduleTimer(SendEnchantsWithAlts, 5, alts)	-- broadcast my crafts to the guild 5 seconds later, to decrease the load at startup
+	end
+end
+
+local onlineCnt = 0
+local GuildCommCallbacks = {
+    [MSG_SEND_LOGIN] = function(sender, version)
+        local player = UnitName("player")
+        if (sender ~= player) then
+            --addon:Print("Got MSG_SEND_LOGIN from "..sender)
+            GuildWhisper(sender, MSG_LOGIN_REPLY, GetBuildVersion())
+            local alts = DataStore:GetGuildMemberAlts(player)
+            if alts then
+                SendEnchantsWithAlts(alts, sender)
+            end
+        end
+        SaveAddonVersion(sender, version)
+    end,
+    [MSG_LOGIN_REPLY] = function(sender, version)
+        addon:Print("Got MSG_LOGIN_REPLY from "..sender)
+        onlineCnt = onlineCnt + 1
+        SaveAddonVersion(sender, version)
+    end,
+    [MSG_SEND_ENCHANTS] = function(sender, alt, data)
+        local player = UnitName("player")
+        if (sender ~= player) then
+            -- addon:Print("Got MSG_SEND_ENCHANTS from "..sender)
+            SaveEnchants(sender, alt, data)
+        end
+    end
+}
+
 -- *** End Utility Functions Ascension ***
+
+
+
+-- *** Public Functions Impl ***
+
+local function _GetRESpellList()
+    --addon:Print("GetRESpellList called!")
+    if AscensionInit == false then return nil end
+
+    return AscRESpellIds
+end
+
+local function _GetKnownEnchants()
+    if AscensionInit == false then return nil end
+
+    return addon.ThisCharacter.KnownEnchants
+end
+
+local function IsREKnownByPlayer(entry, knownList)
+    for _, spellId in pairs(knownList) do
+        if entry == spellId  then return true end
+    end
+    return false
+end
+
+-- returns alt names on the same realm that have the RE (cross-faction, cross-guild)
+local function _GetCharactersWithRE(entry)
+    local altsWithRE = {}
+
+    for name, id in pairs(addon.Characters) do
+        if #id.KnownEnchants > 0 then
+            if IsREKnownByPlayer(entry, id.KnownEnchants) then
+                local _,_,charName = strsplit(".", name)
+                table.insert(altsWithRE, charName)
+            end
+        end
+    end
+
+    return altsWithRE
+end
+
+-- returns guild member's character names
+local function _GetGuildiesWithRE(entry)
+    local guildiesWithRE = {}
+
+    local thisGuild = GetCurrentGuild()
+    if not thisGuild then return {} end
+
+    for name, data in pairs(thisGuild.Members) do
+        if IsREKnownByPlayer(entry, data.KnownEnchants) then
+            table.insert(guildiesWithRE, name)
+        end
+    end
+
+    return guildiesWithRE;
+end
+
+local PublicMethods = {
+    GetRESpellList = _GetRESpellList,
+    GetKnownEnchants = _GetKnownEnchants,
+    GetCharactersWithRE = _GetCharactersWithRE,
+    GetGuildiesWithRE = _GetGuildiesWithRE,
+}
+-- *** End Public Functions Impl ***
+
 
 -- *** WOW Events ***
 
 function addon:OnInitialize()
 	addon.db = LibStub("AceDB-3.0"):New(addonName .. "DB", AddonDB_Defaults)
 	DataStore:RegisterModule(addonName, addon, PublicMethods)
-	-- DataStore:SetGuildCommCallbacks(commPrefix, GuildCommCallbacks)
+    DataStore:SetGuildCommCallbacks(commPrefix, GuildCommCallbacks)
+
+    addon:RegisterMessage("DATASTORE_GUILD_ALTS_RECEIVED", OnGuildAltsReceived)
+    addon:RegisterComm(commPrefix, DataStore:GetGuildCommHandler())
 end
 
 function addon:OnEnable()
-    local charEnchants = addon.ThisCharacter.KnownEnchants
-
     addon:RegisterEvent("CHAT_MSG_ADDON")
+    -- TODO: addon:SetupOptions()
 end
 
 function addon:OnDisable()
     addon:UnregisterEvent("CHAT_MSG_ADDON")
+end
+
+local function SendOnlineInfo()
+    if onlineCnt then
+        addon:Print(format("Found %u online guildies with REToolbox", onlineCnt))
+    end
 end
 
 function addon:CHAT_MSG_ADDON(event, prefix, message, channel, sender)
@@ -191,19 +400,22 @@ function addon:CHAT_MSG_ADDON(event, prefix, message, channel, sender)
     -- Provided after login as a responce to requests from client addons
     -- Data is not present on PLAYER_ALIVE
     if message:find("GetKnownEnchantsList") then
-        addon:Print("Received GetKnownEnchantsList")
+        --addon:Print("Received GetKnownEnchantsList")
         charEnchants = {}
 
         if AscensionInit == false then
             AscRESpellIds = GetRealRESpellIds()
+            addon:SendMessage(collectionInitMsgName, AscRESpellIds)
             ParseKnownEnchantsList(message)
+            addon:ScheduleTimer(SendOnlineInfo, 10)
             AscensionInit = true
+        else
+            ParseKnownEnchantsList(message)
         end
-
-        ParseKnownEnchantsList(message)
         
-        addon:Print("Parsed GetKnownEnchantsList")
+        --addon:Print("Parsed GetKnownEnchantsList")
     elseif message:find("FillCollectionByEnchant") then
-        addon:Print("Unlocked Enchant")
+        ParseNewEnchant(message)
+        --addon:Print("Unlocked Enchant")
     end
 end
