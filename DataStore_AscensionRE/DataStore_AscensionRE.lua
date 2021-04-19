@@ -219,7 +219,7 @@ local function ParseKnownEnchantsList(message)
 
     local reList = CollectionsFrame.EnchantList
     local knownList = {}
-    addon:Print("ParseKnownEnchantsList called. Message len "..strlen(message))
+    -- addon:Print("ParseKnownEnchantsList called. Message len "..strlen(message))
 
     local recvTable = Smallfolk.loads(message, #message)
     if not recvTable or type(recvTable) ~= 'table' then
@@ -236,7 +236,7 @@ local function ParseKnownEnchantsList(message)
         end
     end
 
-    addon:Print("Setting known list for char "..UnitName("player").." size: "..#knownList)
+    -- addon:Print("Setting known list for char "..UnitName("player").." size: "..#knownList)
     addon.ThisCharacter.NumKnownEnchants = #knownList
     addon.ThisCharacter.KnownEnchants = knownList
     addon.ThisCharacter.lastUpdate = time()
