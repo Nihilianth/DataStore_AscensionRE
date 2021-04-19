@@ -219,8 +219,9 @@ local function ParseKnownEnchantsList(message)
 
     local reList = CollectionsFrame.EnchantList
     local knownList = {}
+    addon:Print("ParseKnownEnchantsList called. Message len "..strlen(message))
 
-    local recvTable = Smallfolk.loads(string.sub(message, 3))
+    local recvTable = Smallfolk.loads(message, #message)
     if not recvTable or type(recvTable) ~= 'table' then
         addon:Print("Error: received invalid enchant data with size: "..#msg)
         return
@@ -235,7 +236,7 @@ local function ParseKnownEnchantsList(message)
         end
     end
 
-    -- addon:Print("Setting known list for char "..UnitName("player").." size: "..#knownList)
+    addon:Print("Setting known list for char "..UnitName("player").." size: "..#knownList)
     addon.ThisCharacter.NumKnownEnchants = #knownList
     addon.ThisCharacter.KnownEnchants = knownList
     addon.ThisCharacter.lastUpdate = time()
@@ -249,7 +250,7 @@ local function ParseNewEnchant(message)
     --addon:Print("RE Toolkit: Got FillCollectionByEnchant")
     local reList = CollectionsFrame.EnchantList
 
-    local recvTable = Smallfolk.loads(string.sub(message, 3))
+    local recvTable = Smallfolk.loads(message, #message)
     if not recvTable or type(recvTable) ~= 'table' then
         addon:Print("Received invalid new enchant message. Size: "..#message)
         addon:Print(message)
@@ -326,6 +327,21 @@ local function IsREKnownByPlayer(entry, knownList)
     return false
 end
 
+local function _GetCharactersWithKnownList()
+    local altList = {}
+    for name, id in pairs(addon.Characters) do
+        table.insert(altList, name)
+    end
+    return altList
+end
+
+local function _GetCharacterREs(name)
+    local key = format("%s.%s.%s", THIS_ACCOUNT, GetRealmName(), name)
+    local alt = addon.Characters[key]
+    if alt == nil then return nil end
+    return alt.KnownEnchants
+end
+
 -- returns alt names on the same realm that have the RE (cross-faction, cross-guild)
 local function _GetCharactersWithRE(entry)
     local altsWithRE = {}
@@ -363,6 +379,8 @@ local PublicMethods = {
     GetKnownEnchants = _GetKnownEnchants,
     GetCharactersWithRE = _GetCharactersWithRE,
     GetGuildiesWithRE = _GetGuildiesWithRE,
+    GetCharacterREs = _GetCharacterREs,
+    GetCharactersWithKnownList = _GetCharactersWithKnownList,
 }
 -- *** End Public Functions Impl ***
 
@@ -389,14 +407,122 @@ end
 
 local function SendOnlineInfo()
     if onlineCnt then
-        print(format("Guild members with DataStore_AscensionRE: %u", onlineCnt))
+        print(format("Online guild members with DataStore_AscensionRE: %u.", onlineCnt))
     end
 end
+
+-- From https://github.com/Rochet2/AIO/blob/d06da5d8e7c32e45fde93a1632e9e33105dfd895/AIO_Client/AIO.lua
+-- Converts an uint16 number to string (2 chars)
+-- Note that this escapes using \0 character so the full uint16 range is not usable
+local function AIO_16tostring(uint16)
+    -- split 16bit to 2 8bit parts but without \0
+    assert(uint16 <= 2^16-767, "Too high value")
+    assert(uint16 >= 0, "Negative value")
+    local high = math.floor(uint16 / 254)
+    local l = high +1
+    local r = uint16 - high * 254 +1
+    return string.char(l)..string.char(r)
+end
+
+local recvBuffer = {}
+local enchantMsgId = -1
+-- Converts a string (2 chars) to uint16 number
+-- Note that the chars can not be \0 character so the full uint16 range is not usable
+local function AIO_stringto16(str)
+    local l = string.byte(string.sub(str, 1,1)) -1
+    local r = string.byte(string.sub(str, 2,2)) -1
+    local val = l*254 + r
+    assert(val <= 2^16-767, "Too high value")
+    assert(val >= 0, "Negative value")
+    return val
+end
+local AIO_ShortMsg          = string.char(1)..string.char(1)
 
 function addon:CHAT_MSG_ADDON(event, prefix, message, channel, sender)
     if not prefix or not prefix:find("SAIO") then return end
     if not message then return end
 
+    -- From AIO documentation
+        -- the chars can not contain \0
+        -- 16bit -> Message ID -- 0 reserved for identifying short msg
+        -- 16bit -> Number of parts (should be > 1)
+        -- 16bit -> Part ID
+        -- Rest -> Message String
+
+
+    local msgid = string.sub(message, 1,2)
+    local messageId = AIO_stringto16(msgid)
+
+    if enchantMsgId > 0 and messageId ~= enchantMsgId then
+        addon:Print("Message ID mismatch"..enchantMsgId.." "..messageId)
+        return
+    end
+
+
+    if msgid == AIO_ShortMsg then
+        -- addon:Print("Short Message")
+        message = string.sub(message, 3)
+    --elseif  message:find("BuildEnchantList") or enchantMsgId == messageId then -- sic!
+    elseif  message:find("GetKnownEnchantsList") or enchantMsgId == messageId then -- sic!
+        -- print("messageId "..messageId)
+        if #message < 3*2 then
+            return
+        end
+        local parts = AIO_stringto16(string.sub(message, 3,4))
+        local partId = AIO_stringto16(string.sub(message, 5,6))
+        if partId <= 0 or partId > parts then
+            print("received long message with invalid amount of parts. id, parts: "..partId.." "..parts)
+            return
+        end
+
+        message = string.sub(message, 7)
+        if parts >= 40 then 
+            addon:Print("Received "..parts.."parts for GetKnownEnchantsList. Aborting")
+            return
+        end
+
+        if not recvBuffer[messageId] then
+            enchantMsgId = messageId
+            --addon:Print("got new message "..messageId)
+            recvBuffer[messageId] = {
+                partsCnt = parts,
+                partsStored = 1,
+                parts = { message }
+            }
+            return
+        end
+        msgBuf = recvBuffer[messageId]
+        --print(string.sub(message, 1, 30), string.sub(message, -30))
+        
+        if msgBuf then
+            table.insert(msgBuf.parts, message)
+            msgBuf.partsStored = msgBuf.partsStored + 1
+
+            if msgBuf.partsCnt == msgBuf.partsStored then
+                --local msgLenCalc = (msgBuf.partsCnt - 1) * 2549 + #message
+                --addon:Print("Received all parts")
+                -- print(string.sub(message, 1, 30), string.sub(message, -30))
+                message = table.concat(msgBuf.parts)
+                --print(msgLenCalc, #message, msgBuf.partsStored)
+                --addon:Print(string.sub(message, 1, 30), " : ", string.sub(message, -30))
+                --addon:Print("found "..string.find(message, "Sanctified Light"))
+                enchantMsgId = -1
+                smallFolkLoad = Smallfolk.loads(message, #message)
+            else
+                --print(messageId, partId, parts, #message)
+                --print(string.sub(message, 1, 30), " : ", string.sub(message, -30))
+                --addon:Print("Saved part "..partId)
+                return
+            end
+        end
+
+    end
+
+    if string.sub(message,1,2) ~= (string.char(1)):rep(2) then
+        local msg_noprefix = string.sub(message, 3)
+        --print("split message "..strlen(message))
+        --print(string.sub(msg_noprefix, 1, 30), string.sub(msg_noprefix, -30))
+    end
     -- Provided after login as a responce to requests from client addons
     -- Data is not present on PLAYER_ALIVE
     if message:find("GetKnownEnchantsList") then
