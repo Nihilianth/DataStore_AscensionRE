@@ -9,7 +9,8 @@ if not DataStore then return end
 local addonName = "DataStore_AscensionRE"
 
 _G[addonName] = LibStub("AceAddon-3.0"):NewAddon(addonName, "AceConsole-3.0", "AceEvent-3.0", "AceComm-3.0", "AceSerializer-3.0", "AceTimer-3.0")
-
+local binser = binser or require("binser_wrapper_base64_client")
+local TLibCompress = TLibCompress or require("LibCompress")
 local addon = _G[addonName]
 
 local THIS_ACCOUNT = "Default"
@@ -219,7 +220,7 @@ local function ParseKnownEnchantsList(message)
 
     local reList = CollectionsFrame.EnchantList
     local knownList = {}
-    -- addon:Print("ParseKnownEnchantsList called. Message len "..strlen(message))
+    addon:Print("ParseKnownEnchantsList called. Message len "..strlen(message))
 
     local recvTable = Smallfolk.loads(message, #message)
     if not recvTable or type(recvTable) ~= 'table' then
@@ -247,10 +248,10 @@ end
 
 -- Parse server message received after unlocking a new RE
 local function ParseNewEnchant(message)
-    --addon:Print("RE Toolkit: Got FillCollectionByEnchant")
+    addon:Print("RE Toolkit: Got FillCollectionByEnchant")
     local reList = CollectionsFrame.EnchantList
 
-    local recvTable = Smallfolk.loads(message, #message)
+    local recvTable = binser.decode(message, #message)
     if not recvTable or type(recvTable) ~= 'table' then
         addon:Print("Received invalid new enchant message. Size: "..#message)
         addon:Print(message)
@@ -387,6 +388,27 @@ local PublicMethods = {
 
 -- *** WOW Events ***
 
+local function InitAscensionData()
+    AscRESpellIds = AscensionUI.REListSpellID
+    local knownList = {}
+    for enchantID, RE in pairs(AscensionUI.REList) do
+        if RE.enchantID > 0 then
+            spellid = RE.spellID
+            if (IsReforgeEnchantmentKnown(RE.enchantID)) then
+                table.insert(knownList, spellid)
+            end  
+        end
+    end
+
+    --addon:Print("Setting known list for char "..UnitName("player").." size: "..#knownList)
+    addon.ThisCharacter.NumKnownEnchants = #knownList
+    addon.ThisCharacter.KnownEnchants = knownList
+    addon.ThisCharacter.lastUpdate = time()
+    addon.ThisCharacter.Version = GetBuildVersion()
+    addon:SendMessage(collectionUpdateMsgName, knownList, AscensionInit)
+    SendEnchantsWithAlts("") -- send own enchants
+    AscensionInit = true
+end
 function addon:OnInitialize()
 	addon.db = LibStub("AceDB-3.0"):New(addonName .. "DB", AddonDB_Defaults)
 	DataStore:RegisterModule(addonName, addon, PublicMethods)
@@ -394,6 +416,9 @@ function addon:OnInitialize()
 
     addon:RegisterMessage("DATASTORE_GUILD_ALTS_RECEIVED", OnGuildAltsReceived)
     addon:RegisterComm(commPrefix, DataStore:GetGuildCommHandler())
+
+    
+    addon:ScheduleTimer(InitAscensionData, 5)
 end
 
 function addon:OnEnable()
@@ -439,7 +464,8 @@ end
 local AIO_ShortMsg          = string.char(1)..string.char(1)
 
 function addon:CHAT_MSG_ADDON(event, prefix, message, channel, sender)
-    if not prefix or not prefix:find("SAIO") then return end
+    
+    if not prefix or not prefix:find("SAI2O") then return end
     if not message then return end
 
     -- From AIO documentation
@@ -526,7 +552,7 @@ function addon:CHAT_MSG_ADDON(event, prefix, message, channel, sender)
     -- Provided after login as a responce to requests from client addons
     -- Data is not present on PLAYER_ALIVE
     if message:find("GetKnownEnchantsList") then
-        --addon:Print("Received GetKnownEnchantsList")
+        addon:Print("Received GetKnownEnchantsList")
         charEnchants = {}
 
         if AscensionInit == false then
@@ -539,9 +565,9 @@ function addon:CHAT_MSG_ADDON(event, prefix, message, channel, sender)
             ParseKnownEnchantsList(message)
         end
         
-        --addon:Print("Parsed GetKnownEnchantsList")
+        addon:Print("Parsed GetKnownEnchantsList")
     elseif message:find("FillCollectionByEnchant") then
         ParseNewEnchant(message)
-        --addon:Print("Unlocked Enchant")
+        addon:Print("Unlocked Enchant")
     end
 end
