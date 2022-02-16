@@ -2,7 +2,7 @@
 ## Title: DataStore_AscensionRE
 ## Notes: Stores information about Mystic Enchantments
 ## Author: Nihilianth (Canalmist on Area 52)
-## Version: 0.0.002b
+## Version: 0.0.003b
 ## Dependencies: DataStore
 ## OptionalDeps: Ace3
 ## SavedVariables: DataStore_AscensionREDB
