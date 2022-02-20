@@ -482,7 +482,7 @@ end
 -- *** WOW Events ***
 
 function addon:OnInitialize()
-    addon:Print("OnInitialize")
+    --addon:Print("OnInitialize")
 	addon.db = LibStub("AceDB-3.0"):New(addonName .. "DB", AddonDB_Defaults)
 	DataStore:RegisterModule(addonName, addon, PublicMethods)
     DataStore:SetGuildCommCallbacks(commPrefix, GuildCommCallbacks)
@@ -494,7 +494,7 @@ function addon:OnInitialize()
 end
 
 function addon:OnEnable()
-    addon:Print("OnEnable")
+    --addon:Print("OnEnable")
     addon:ScheduleTimer(CleanupInactiveCharacters, 1)
     addon:ScheduleTimer(InitAscensionData, 5)
     addon:RegisterEvent("COMMENTATOR_SKIRMISH_QUEUE_REQUEST")
